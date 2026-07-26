@@ -1,0 +1,50 @@
+spring:
+  application:
+    name: ledger-service
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/ledger
+    username: ledger_user
+    password: ledger_pass
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate   # schema is owned by Flyway migrations, not Hibernate
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      # password:            # set if your Redis instance requires auth
+      timeout: 2000ms
+
+app:
+  jwt:
+    # Local-dev-only secret. Override with a real secret via environment
+    # variable APP_JWT_SECRET in any non-local environment -- never commit
+    # a production secret to source control.
+    secret: ${APP_JWT_SECRET:local-dev-only-secret-change-me-32bytes-min}
+    expiry-seconds: 3600
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+logging:
+  level:
+    com.cred.ledger: DEBUG
+    org.hibernate.SQL: DEBUG

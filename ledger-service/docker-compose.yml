@@ -1,0 +1,46 @@
+version: "3.8"
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ledger
+      POSTGRES_USER: ledger_user
+      POSTGRES_PASSWORD: ledger_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - ledger_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ledger_user -d ledger"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/ledger
+      SPRING_DATASOURCE_USERNAME: ledger_user
+      SPRING_DATASOURCE_PASSWORD: ledger_pass
+      SPRING_DATA_REDIS_HOST: redis
+      APP_JWT_SECRET: local-dev-only-secret-change-me-32bytes-min
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  ledger_pg_data:
