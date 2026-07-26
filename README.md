@@ -51,6 +51,307 @@ points -> never double-spend, always auditable).
   ledgers (and CRED's rewards system) use for chargebacks/corrections --
   the log only ever grows.
 
+---
+
+# System Design (LLD)
+
+This project follows a layered architecture where each layer has a single responsibility.
+
+```text
+                    React (Vite)
+                         │
+                  HTTP REST + JWT
+                         │
+                         ▼
+              Spring Security Filter
+                         │
+                 JWT Authentication
+                         │
+                         ▼
+                 Controller Layer
+        ┌──────────┬──────────────┬──────────────┐
+        │          │              │
+ AuthController AccountController LedgerController
+        │          │              │
+        └──────────┴──────────────┘
+                    │
+                    ▼
+                Service Layer
+       ┌─────────────────────────────┐
+       │ AuthService                 │
+       │ LedgerService               │
+       │ AuditService                │
+       └─────────────────────────────┘
+                    │
+                    ▼
+             Repository Layer
+       ┌─────────────────────────────┐
+       │ UserRepository              │
+       │ AccountRepository           │
+       │ LedgerEntryRepository       │
+       └─────────────────────────────┘
+            │                 │
+            ▼                 ▼
+      PostgreSQL           Redis
+```
+
+## Request Lifecycle
+
+Every incoming request follows the same high-level flow.
+
+```text
+Client
+   │
+   ▼
+JWT Authentication
+   │
+   ▼
+Authorization Check
+   │
+   ▼
+Controller
+   │
+   ▼
+Service
+   │
+   ▼
+Repository
+   │
+   ▼
+PostgreSQL / Redis
+   │
+   ▼
+HTTP Response
+```
+
+---
+
+# Credit Flow
+
+Credits are low-contention operations, so optimistic locking is used.
+
+```text
+Client
+   │
+POST /credit
+   │
+   ▼
+LedgerController
+   │
+   ▼
+LedgerService.credit()
+   │
+   ├── Validate JWT
+   ├── Validate Account Ownership
+   ├── Check Idempotency Key
+   ├── Load Account
+   ├── Create Ledger Entry
+   ├── Update Cached Balance
+   └── Commit Transaction
+   │
+   ▼
+Success Response
+```
+
+**Concurrency Strategy**
+
+- Optimistic Locking (`@Version`)
+- Suitable for many independent credit operations
+- Retries are inexpensive
+
+---
+
+# Debit Flow
+
+Debit operations require stronger consistency to prevent double spending.
+
+```text
+Client
+   │
+POST /debit
+   │
+   ▼
+LedgerController
+   │
+   ▼
+LedgerService.debit()
+   │
+   ├── Validate JWT
+   ├── Validate Ownership
+   ├── Check Idempotency
+   ├── SELECT ... FOR UPDATE
+   ├── Verify Balance
+   ├── Insert Ledger Entry
+   ├── Update Cached Balance
+   └── Commit Transaction
+   │
+   ▼
+Success Response
+```
+
+**Concurrency Strategy**
+
+- Pessimistic Row Locking
+- Prevents concurrent debits on the same account
+- Eliminates double spending
+
+---
+
+# Reversal Flow
+
+Ledger entries are never deleted.
+
+Instead, compensating entries are created.
+
+```text
+Original Transaction
+        │
+        ▼
+Marked REVERSED
+        │
+        ▼
+Compensating Ledger Entry
+        │
+        ▼
+Balance Updated
+```
+
+Example
+
+```text
++500 Points
+-500 Points
+```
+
+instead of deleting the original record.
+
+This guarantees a complete audit trail.
+
+---
+
+# Authentication Flow
+
+```text
+Register/Login
+      │
+      ▼
+AuthController
+      │
+      ▼
+AuthService
+      │
+      ├── Verify Password
+      ├── Generate JWT
+      └── Return Token
+```
+
+Every subsequent request
+
+```text
+Client
+   │
+Bearer Token
+   │
+   ▼
+Spring Security
+   │
+Validate JWT
+   │
+Extract accountId
+   │
+Authorize Request
+   │
+Controller
+```
+
+---
+
+# Distributed Rate Limiting
+
+```text
+Incoming Request
+        │
+        ▼
+Rate Limiter Filter
+        │
+        ▼
+Redis Lua Script
+        │
+  ┌─────┴─────┐
+  │           │
+Allowed    Rate Limited
+  │           │
+  ▼           ▼
+Continue   HTTP 429
+```
+
+Using a Redis Lua script guarantees that token refill and consumption occur atomically across multiple application instances.
+
+---
+
+# Audit Flow
+
+The cached account balance is treated as an optimization.
+
+The ledger remains the source of truth.
+
+```text
+Audit Request
+      │
+      ▼
+Load Cached Balance
+      │
+      ▼
+Replay Ledger Entries
+      │
+      ▼
+Calculate Actual Balance
+      │
+      ▼
+Compare Values
+      │
+ ┌────┴────┐
+ │         │
+Match   Mismatch
+ │         │
+Healthy   Investigation Required
+```
+
+---
+
+# Entity Relationships
+
+```text
+User
+ │
+ │ 1
+ ▼
+Account
+ │
+ │ 1
+ ▼
+LedgerEntry
+```
+
+---
+
+# Design Decisions
+
+| Decision | Reason |
+|-----------|--------|
+| Append-only Ledger | Complete audit history and replayability |
+| JWT Authentication | Stateless authentication |
+| Account Ownership Validation | Prevent cross-account access |
+| Idempotency Keys | Safe retries without duplicate transactions |
+| Optimistic Locking | Efficient handling of concurrent credit operations |
+| Pessimistic Locking | Prevent double spending during debits |
+| Redis Token Bucket | Distributed rate limiting |
+| Cached Balance | Fast reads while preserving ledger as the source of truth |
+| Compensating Entries | Corrections without deleting historical records |
+
+---
+
+
 ## Running locally
 
 **Option A — everything in Docker:**
