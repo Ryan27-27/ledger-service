@@ -2,7 +2,7 @@
 
 An **append-only points ledger** with a React UI — the kind of core a rewards, wallet or
 loyalty platform sits on. The interesting part isn't the CRUD; it's making money-like state
-*correct* under retries, concurrency and mistakes.
+_correct_ under retries, concurrency and mistakes.
 
 ```
 React 19 + TypeScript + Tailwind  ──►  Spring Boot 3 (Java 21)  ──►  PostgreSQL 16 (source of truth)
@@ -16,11 +16,11 @@ React 19 + TypeScript + Tailwind  ──►  Spring Boot 3 (Java 21)  ──► 
 docker compose up --build
 ```
 
-| | |
-|---|---|
-| UI | http://localhost:3000 |
-| API + Swagger UI | http://localhost:8080/swagger-ui.html |
-| Admin login | `admin` / `admin-password-123` (override in `.env`, see `.env.example`) |
+|                  |                                                                         |
+| ---------------- | ----------------------------------------------------------------------- |
+| UI               | http://localhost:3000                                                   |
+| API + Swagger UI | http://localhost:8080/swagger-ui.html                                   |
+| Admin login      | `admin` / `admin-password-123` (override in `.env`, see `.env.example`) |
 
 Register a user, add points, redeem, reverse an entry, and watch the **"ledger verified"** badge
 — it comes from `/audit`, which replays the whole log and compares it with the cached balance.
@@ -32,21 +32,23 @@ Without Docker: see [ledger-service/README.md](ledger-service/README.md) and
 ## What it demonstrates
 
 **Correctness**
-- **Append-only log.** Rows are never edited or deleted; mistakes are fixed by a *compensating entry*
+
+- **Append-only log.** Rows are never edited or deleted; mistakes are fixed by a _compensating entry_
   linked to the original (`reversal_of`). This is enforced **in the database** with a trigger — only
   `status` may change (`POSTED → REVERSED`, never back) — so a bug or manual SQL can't rewrite history.
 - **Audit replay.** `balance = Σ credits − Σ debits` over the log, compared to the cached balance on
   every page load. The cache is a performance optimisation, never the truth.
 - **No double spend.** Debits take a pessimistic row lock (`SELECT … FOR UPDATE`); credits use optimistic
   locking (`@Version`) with bounded retry. Defence in depth: a DB `CHECK (cached_balance >= 0)`.
-- **Idempotency.** Every write carries a client key, unique *per account*. Same key + same request →
+- **Idempotency.** Every write carries a client key, unique _per account_. Same key + same request →
   `200` with the original entry; same key + different request → `409`; a race between two identical
-  requests is resolved by the unique constraint, not by luck. The UI generates one key per *user action*
+  requests is resolved by the unique constraint, not by luck. The UI generates one key per _user action_
   and reuses it on retry.
 - **Reversal rules.** An entry can be reversed once (partial unique index), a reversal can't be reversed,
   and reversing a credit re-checks the balance because the points may already be spent.
 
 **Security**
+
 - JWT access tokens (15 min) + **rotating refresh tokens** (opaque, stored only as SHA-256 hashes;
   replaying a used token revokes the user's whole session family).
 - Ownership checks on every account route; **credit and reverse are admin-only** (they create/undo points).
@@ -58,7 +60,8 @@ Without Docker: see [ledger-service/README.md](ledger-service/README.md) and
   a JWT secret under 32 bytes).
 
 **Engineering practice**
-- One error contract for *everything* (`code`, `message`, `requestId`, `fieldErrors`) — controllers, security
+
+- One error contract for _everything_ (`code`, `message`, `requestId`, `fieldErrors`) — controllers, security
   filters and framework errors alike. See [API_SPEC.md](ledger-service/API_SPEC.md).
 - Request-id correlation across response headers and every log line; access log; Prometheus metrics
   (`ledger_entries_posted_total{type}`) and health probes; graceful shutdown.
@@ -84,6 +87,7 @@ Request flow for a redemption: `JWT filter → ownership check → rate limiter 
 one transaction). Metrics are recorded only after commit.
 
 Key trade-offs, deliberately made:
+
 - **Cached balance + log** instead of computing balance on every read: O(1) reads, with the audit endpoint as the
   safety net. The cost is two writes per entry, kept consistent by the transaction and the row lock.
 - **Mixed locking.** Debits are the contended path (double taps, retries) so they serialise on a row lock;
@@ -93,11 +97,11 @@ Key trade-offs, deliberately made:
 
 ## Tests
 
-| Layer | What | Needs Docker |
-|---|---|---|
-| Backend unit | JWT (expiry, forgery, tampered payload, short secret), token-bucket limiter incl. 100-thread contention | no |
+| Layer                                              | What                                                                                                                                                                                                                                                                              | Needs Docker               |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| Backend unit                                       | JWT (expiry, forgery, tampered payload, short secret), token-bucket limiter incl. 100-thread contention                                                                                                                                                                           | no                         |
 | Backend integration (Testcontainers + Postgres 16) | Reversals both directions & audit consistency, reverse-once rules, idempotency semantics, concurrent debits (exactly one wins), concurrent credits (no lost update), HTTP auth/ownership/admin rules, validation, pagination, refresh-token rotation + theft detection, demo mode | yes (auto-skipped without) |
-| Frontend (Vitest + Testing Library) | API client (auth header, error mapping, refresh-on-401, single-flight refresh, session expiry), modals (validation, **same idempotency key on retry**), ledger table (running balance, reversal eligibility, paging) | no |
+| Frontend (Vitest + Testing Library)                | API client (auth header, error mapping, refresh-on-401, single-flight refresh, session expiry), modals (validation, **same idempotency key on retry**), ledger table (running balance, reversal eligibility, paging)                                                              | no                         |
 
 ```bash
 cd ledger-service && mvn verify          # backend
