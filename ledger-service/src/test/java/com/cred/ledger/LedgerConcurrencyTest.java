@@ -43,7 +43,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * (bypassing the controller and its rate limiter), so it has no need for a
  * live Redis instance -- see RedisRateLimiterTest for that.
  */
-@Testcontainers
+@Testcontainers(disabledWithoutDocker = true)
 @SpringBootTest
 @ActiveProfiles("no-redis")
 class LedgerConcurrencyTest {
