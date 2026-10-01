@@ -41,8 +41,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             try {
                 Claims claims = jwtService.parseAndValidate(token);
                 String username = claims.getSubject();
-                UUID accountId = UUID.fromString(claims.get("accountId", String.class));
+                String accountClaim = claims.get("accountId", String.class);
                 String role = claims.get("role", String.class);
+                if (username == null || accountClaim == null || role == null) {
+                    throw new JwtException("Token is missing required claims");
+                }
+                UUID accountId = UUID.fromString(accountClaim);
 
                 AuthenticatedUser principal = new AuthenticatedUser(username, accountId, role);
 

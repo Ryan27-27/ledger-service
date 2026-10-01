@@ -1,262 +1,74 @@
-# Ledger Service — API Specification
+# Ledger Service — API reference
 
-Base URL: `http://localhost:8080/api/v1`
+The live, always-correct reference is the generated OpenAPI document:
+**Swagger UI** at `/swagger-ui.html`, raw spec at `/v3/api-docs`. This file is the
+human summary of the contract and its guarantees.
 
-All amounts are decimal strings/numbers with 2 decimal places (points, treated like currency — no float rounding errors).
+Base path `/api/v1`. JSON in/out. Authenticated endpoints need `Authorization: Bearer <access token>`.
 
-**Every endpoint below except `/auth/register` and `/auth/login` requires an
-`Authorization: Bearer <token>` header.** Tokens are issued by register/login
-and expire after 1 hour (`app.jwt.expiry-seconds`). A request to
-`/accounts/{accountId}/...` where `{accountId}` doesn't match the token's own
-account is rejected with `403`, even for a validly-authenticated user — see
-the ownership note at the end of this doc.
+## Endpoints
 
----
+| Method | Path | Who | Purpose |
+|---|---|---|---|
+| POST | `/auth/register` | public | Create user + account, returns tokens |
+| POST | `/auth/login` | public | Returns tokens |
+| POST | `/auth/refresh` | public (refresh token) | Rotate refresh token, new access token |
+| POST | `/auth/logout` | public (refresh token) | Revoke a refresh token |
+| GET  | `/meta` | public | `{demoMode, version}` |
+| GET  | `/accounts/{id}/balance` | owner / admin | Cached balance |
+| GET  | `/accounts/{id}/entries?page=&size=` | owner / admin | Newest-first page, each row with `runningBalance` |
+| GET  | `/accounts/{id}/audit` | owner / admin | Replay the log vs. cached balance |
+| POST | `/accounts/{id}/debits` | owner / admin | Redeem points (rate limited) |
+| POST | `/accounts/{id}/credits` | admin (owner in demo mode) | Credit points |
+| POST | `/accounts/{id}/entries/{entryId}/reverse` | admin (owner in demo mode) | Compensating entry |
+| POST | `/accounts` | admin | Provision an account without a login |
+| GET  | `/admin/accounts?q=&page=&size=` | admin | Search all accounts |
 
-## 0. Register
+Operational: `/actuator/health` (public), `/actuator/prometheus` and other actuator endpoints (ADMIN).
 
-`POST /auth/register`
+## Idempotency
 
-Creates a `User` and a matching points `Account` together, and returns a JWT.
+`credits`, `debits` and `reverse` require an `idempotencyKey` (unique **per account**).
 
-**Request**
-```json
-{ "username": "aryan123", "password": "correcthorsebattery" }
-```
-
-**Response `201 Created`**
-```json
-{
-  "token": "eyJhbGciOiJIUzI1NiJ9...",
-  "tokenType": "Bearer",
-  "expiresInSeconds": 3600,
-  "accountId": "b3f1e2a0-...",
-  "username": "aryan123"
-}
-```
-
-**Errors**
-| Status | Cause |
+| Situation | Response |
 |---|---|
-| 400 | validation failure (blank username, password under 8 chars) |
-| 409 | username already taken |
+| First time | `201` + the new entry |
+| Same key, same request (retry) | `200` + the **original** entry; nothing is applied twice |
+| Same key, different type/amount | `409 IDEMPOTENCY_KEY_REUSE` |
+| Two identical requests racing | one `201`, the other `200` (unique constraint decides) |
 
----
+## Errors
 
-## 0.1 Login
-
-`POST /auth/login`
-
-**Request**
-```json
-{ "username": "aryan123", "password": "correcthorsebattery" }
-```
-
-**Response `200 OK`** — same shape as register.
-
-**Errors**
-| Status | Cause |
-|---|---|
-| 401 | wrong username or password |
-
----
-
-## 1. Create Account (admin only)
-
-`POST /accounts`
-
-Direct account provisioning outside of registration — for ops tooling or
-service accounts. Requires the caller's token to carry the `ADMIN` role.
-Ordinary users get an account automatically via `/auth/register` and never
-need this endpoint.
-
-**Request**
-```json
-{ "userId": "user-123" }
-```
-
-**Response `201 Created`**
-```json
-{
-  "id": "b3f1e2a0-...",
-  "userId": "user-123",
-  "cachedBalance": 0.00,
-  "version": 0,
-  "createdAt": "2026-07-20T10:00:00Z",
-  "updatedAt": "2026-07-20T10:00:00Z"
-}
-```
-
-**Errors**
-| Status | Cause |
-|---|---|
-| 403 | caller does not have the ADMIN role |
-
----
-
-## 2. Credit Points (earn)
-
-`POST /accounts/{accountId}/credits`
-
-**Request**
-```json
-{
-  "amount": 50.00,
-  "referenceId": "bill-payment-98234",
-  "idempotencyKey": "credit-bill-98234-v1"
-}
-```
-
-**Response `201 Created`** (new entry) or **`200 OK`** (idempotent replay — same key seen before, original entry returned unchanged)
-```json
-{
-  "id": "e7c2...",
-  "accountId": "b3f1e2a0-...",
-  "amount": 50.00,
-  "type": "CREDIT",
-  "status": "POSTED",
-  "referenceId": "bill-payment-98234",
-  "createdAt": "2026-07-20T10:05:00Z"
-}
-```
-
-**Errors**
-| Status | Cause |
-|---|---|
-| 400 | validation failure (missing/negative amount, blank referenceId) |
-| 403 | token's account does not match `{accountId}` in the URL |
-| 404 | account not found |
-| 409 | concurrent update conflict (optimistic lock) — client should retry |
-
----
-
-## 3. Debit Points (redeem)
-
-`POST /accounts/{accountId}/debits`
-
-**Request**
-```json
-{
-  "amount": 30.00,
-  "referenceId": "redemption-55123",
-  "idempotencyKey": "debit-redemption-55123-v1"
-}
-```
-
-**Response `201 Created`** / **`200 OK`** (idempotent replay) — same shape as credit response, `"type": "DEBIT"`.
-
-**Errors**
-| Status | Cause |
-|---|---|
-| 400 | validation failure |
-| 403 | token's account does not match `{accountId}` in the URL |
-| 404 | account not found |
-| 422 | insufficient balance |
-| 429 | rate limit exceeded (more than 5 redemption attempts in a burst, then >1 per 2s sustained) — same account only |
-
-> Debit requests serialize per-account (pessimistic lock) rather than returning 409 on contention — a racing second request will simply wait, then likely fail with 422 once it sees the reduced balance.
-
----
-
-## 4. Get Balance
-
-`GET /accounts/{accountId}/balance`
-
-**Response `200 OK`**
-```json
-{ "accountId": "b3f1e2a0-...", "balance": 20.00 }
-```
-
-Fast path — reads `Account.cachedBalance` directly, no replay.
-
----
-
-## 5. Get Transaction History
-
-`GET /accounts/{accountId}/entries`
-
-**Response `200 OK`**
-```json
-[
-  { "id": "...", "type": "CREDIT", "amount": 50.00, "referenceId": "bill-payment-98234", "createdAt": "..." },
-  { "id": "...", "type": "DEBIT",  "amount": 30.00, "referenceId": "redemption-55123",  "createdAt": "..." }
-]
-```
-
----
-
-## 6. Reverse an Entry (correction)
-
-`POST /accounts/{accountId}/entries/{entryId}/reverse`
-
-Posts a compensating entry against the original (never mutates or deletes it).
-
-**Request**
-```json
-{
-  "reason": "duplicate bill-payment webhook, correcting credit",
-  "idempotencyKey": "reverse-e7c2-v1"
-}
-```
-
-**Response `201 Created`** (compensating entry, opposite type of the original)
-```json
-{
-  "id": "f9a1...",
-  "accountId": "b3f1e2a0-...",
-  "amount": 50.00,
-  "type": "DEBIT",
-  "status": "POSTED",
-  "referenceId": "reversal-of-e7c2...",
-  "createdAt": "2026-07-20T11:00:00Z"
-}
-```
-
-**Errors**
-| Status | Cause |
-|---|---|
-| 403 | token's account does not match `{accountId}` in the URL |
-| 404 | account or entry not found |
-| 409 | entry already reversed |
-| 422 | reversing a CREDIT would leave balance negative (points already spent) |
-
----
-
-## 7. Audit (balance replay)
-
-`GET /accounts/{accountId}/audit`
-
-Recomputes balance from the append-only log and compares to the cache — the correctness proof.
-
-**Response `200 OK`**
-```json
-{
-  "accountId": "b3f1e2a0-...",
-  "cachedBalance": 20.00,
-  "computedBalance": 20.00,
-  "consistent": true
-}
-```
-
-If `consistent: false`, it signals a bug in the credit/debit path (cache and log disagree) — this endpoint is the canary for that class of error.
-
----
-
-## Error Response Shape (all 4xx/5xx)
+Every failure has the same shape; `code` is stable, `message` is for humans.
 
 ```json
 {
-  "timestamp": "2026-07-20T10:05:00Z",
+  "timestamp": "2026-10-01T10:15:30Z",
   "status": 422,
   "error": "Unprocessable Entity",
-  "message": "Insufficient balance: have 20.00, need 30.00"
+  "code": "INSUFFICIENT_BALANCE",
+  "message": "Insufficient balance: have 40.00, need 100.00",
+  "requestId": "6b1f…"
 }
 ```
 
----
+Validation errors add `"fieldErrors": {"amount": "amount must be at least 0.01"}`.
+Send `X-Request-Id` to supply your own correlation id; it is echoed on every response and appears in every log line.
 
-## Design notes for interview discussion
+| Status | `code` | Meaning |
+|---|---|---|
+| 400 | `VALIDATION_ERROR`, `MALFORMED_REQUEST` | Bad input |
+| 401 | `UNAUTHENTICATED`, `INVALID_CREDENTIALS`, `INVALID_REFRESH_TOKEN` | Missing/expired token, bad login |
+| 403 | `ACCESS_DENIED` | Not your account, or admin-only action |
+| 404 | `ACCOUNT_NOT_FOUND` | |
+| 409 | `USERNAME_TAKEN`, `IDEMPOTENCY_KEY_REUSE`, `INVALID_REVERSAL`, `CONCURRENT_UPDATE`, `DATA_CONFLICT` | State conflicts; `CONCURRENT_UPDATE` is safe to retry with the same key |
+| 422 | `INSUFFICIENT_BALANCE` | |
+| 429 | `RATE_LIMITED` | `Retry-After` header set |
+| 500 | `INTERNAL_ERROR` | Details only in server logs, matched by `requestId` |
 
-- **Idempotency key is mandatory on every write**, not optional — this is deliberate. It forces callers (and you, in a demo) to think about retry-safety from day one rather than bolting it on later.
-- **Why 200 vs 201 on idempotent replay**: a replayed request didn't create anything new, so `200` with the original resource is more correct than pretending a fresh `201` happened.
-- **Why debit doesn't just return 409 on lock contention**: with a pessimistic lock, the second request isn't rejected — it queues briefly and then evaluates against the *post-first-request* balance, which is the more realistic "redeem" UX than making the user manually retry.
+## Money rules
+
+* Amounts: `0.01` ≤ amount, max 2 decimal places, `NUMERIC(19,2)` in the database.
+* A debit can never take a balance below zero (application check **and** a DB `CHECK`).
+* Reversing a credit re-checks the balance — the points may already be spent.
+* An entry can be reversed once; a reversal entry cannot itself be reversed.

@@ -16,8 +16,12 @@ export function AuthScreen({ onLogin, onRegister, loading }: Props) {
     e.preventDefault();
     setLocalError(null);
     if (!username.trim() || !password) return;
-    if (mode === "register" && password.length < 8) {
-      setLocalError("Password must be at least 8 characters");
+    if (mode === "register" && !/^[A-Za-z0-9_.-]{3,64}$/.test(username.trim())) {
+      setLocalError("Username: 3-64 characters — letters, digits, '.', '_' or '-'");
+      return;
+    }
+    if (mode === "register" && (password.length < 8 || password.length > 72)) {
+      setLocalError("Password must be 8-72 characters");
       return;
     }
     try {
@@ -60,7 +64,7 @@ export function AuthScreen({ onLogin, onRegister, loading }: Props) {
               autoFocus
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              placeholder="aryan123"
+              placeholder="your.name"
               autoComplete="username"
               className="mt-1.5 w-full bg-ink-panel border border-ink-border rounded-lg px-3.5 py-2.5
                          text-sm font-mono text-text-primary placeholder:text-text-faint

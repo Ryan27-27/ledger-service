@@ -6,30 +6,48 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
+/**
+ * Two limiters, each available in a Redis-backed (default, correct across
+ * instances) and an in-memory (profile "no-redis", for local dev and tests)
+ * flavour. Capacity / refill come from app.rate-limit.* in application.yml.
+ *
+ *  - debitRateLimiter: per account, guards redemption bursts
+ *  - authRateLimiter:  per client IP, slows credential stuffing on /auth/**
+ */
 @Configuration
 public class RateLimiterConfig {
 
-    /**
-     * Default: Redis-backed, correct across multiple instances. Active
-     * whenever the "no-redis" profile is NOT set.
-     *
-     * capacity=5, refill=0.5/sec -> an account can burst 5 redemption
-     * attempts, then is limited to 1 every 2 seconds.
-     */
-    @Bean
+    @Bean(name = "debitRateLimiter")
     @Profile("!no-redis")
-    public RateLimiter redisDebitRateLimiter(StringRedisTemplate redisTemplate) {
-        return new RedisTokenBucketRateLimiter(redisTemplate, 5, 0.5, "ratelimit:debit");
+    public RateLimiter redisDebitRateLimiter(
+            StringRedisTemplate redis,
+            @Value("${app.rate-limit.debit.capacity:5}") int capacity,
+            @Value("${app.rate-limit.debit.refill-per-second:0.5}") double refill) {
+        return new RedisTokenBucketRateLimiter(redis, capacity, refill, "ratelimit:debit");
     }
 
-    /**
-     * Fallback for local dev without Redis running, or for the test
-     * profile: `mvn test -Dspring-boot.run.profiles=no-redis`. Same
-     * capacity/refill so behavior is identical, just not distributed.
-     */
-    @Bean
+    @Bean(name = "authRateLimiter")
+    @Profile("!no-redis")
+    public RateLimiter redisAuthRateLimiter(
+            StringRedisTemplate redis,
+            @Value("${app.rate-limit.auth.capacity:20}") int capacity,
+            @Value("${app.rate-limit.auth.refill-per-second:0.5}") double refill) {
+        return new RedisTokenBucketRateLimiter(redis, capacity, refill, "ratelimit:auth");
+    }
+
+    @Bean(name = "debitRateLimiter")
     @Profile("no-redis")
-    public RateLimiter inMemoryDebitRateLimiter() {
-        return new TokenBucketRateLimiter(5, 0.5);
+    public RateLimiter inMemoryDebitRateLimiter(
+            @Value("${app.rate-limit.debit.capacity:5}") int capacity,
+            @Value("${app.rate-limit.debit.refill-per-second:0.5}") double refill) {
+        return new TokenBucketRateLimiter(capacity, refill);
+    }
+
+    @Bean(name = "authRateLimiter")
+    @Profile("no-redis")
+    public RateLimiter inMemoryAuthRateLimiter(
+            @Value("${app.rate-limit.auth.capacity:20}") int capacity,
+            @Value("${app.rate-limit.auth.refill-per-second:0.5}") double refill) {
+        return new TokenBucketRateLimiter(capacity, refill);
     }
 }

@@ -6,27 +6,32 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.math.BigDecimal;
-import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 public interface LedgerEntryRepository extends JpaRepository<LedgerEntry, UUID> {
 
-    Optional<LedgerEntry> findByIdempotencyKey(String idempotencyKey);
-
-    List<LedgerEntry> findByAccountIdOrderByCreatedAtAsc(UUID accountId);
+    Optional<LedgerEntry> findByAccountIdAndIdempotencyKey(UUID accountId, String idempotencyKey);
 
     Optional<LedgerEntry> findByIdAndAccountId(UUID id, UUID accountId);
 
+    long countByAccountId(UUID accountId);
+
     /**
-     * Recomputes balance directly from POSTED entries: SUM(credits) - SUM(debits).
-     * This is the source of truth used by the /audit endpoint to validate
-     * (and if needed, correct) Account.cachedBalance.
+     * Recomputes the balance from the full log: SUM(credits) - SUM(debits).
+     *
+     * Every entry counts, including REVERSED originals: a reversal is modelled
+     * as a compensating entry of the opposite type, so the original and its
+     * compensation net to zero. (Filtering on status here would drop the
+     * original but keep the compensation and double-count the correction.)
+     *
+     * Returns null when the account has no entries; callers treat that as zero.
      */
     @Query("""
-        select coalesce(sum(case when e.type = 'CREDIT' then e.amount else -e.amount end), 0)
+        select sum(case when e.type = com.cred.ledger.domain.EntryType.CREDIT
+                        then e.amount else -e.amount end)
         from LedgerEntry e
-        where e.accountId = :accountId and e.status = 'POSTED'
+        where e.accountId = :accountId
         """)
     BigDecimal computeBalance(@Param("accountId") UUID accountId);
 }

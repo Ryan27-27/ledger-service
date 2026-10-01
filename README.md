@@ -1,110 +1,118 @@
-# Ledger Service
+# Fullstack Ledger
 
-An append-only rewards/points ledger service, modeled on how CRED's points
-system likely works under the hood (pay a bill -> earn points -> redeem
-points -> never double-spend, always auditable).
+An **append-only points ledger** with a React UI — the kind of core a rewards, wallet or
+loyalty platform sits on. The interesting part isn't the CRUD; it's making money-like state
+*correct* under retries, concurrency and mistakes.
 
-## Why this design
-
-- **Append-only ledger**: `ledger_entries` rows are never updated or deleted.
-  Corrections are made by inserting compensating entries. This gives a full
-  audit trail and makes the system replayable/recoverable from any point.
-- **Idempotency keys**: every write carries a client-supplied key with a
-  unique DB constraint. A retried request (client timeout, network blip,
-  at-least-once queue delivery) can never be double-counted -- the second
-  insert fails fast, and the API returns the original result instead of an
-  error.
-- **Two concurrency strategies, used deliberately**:
-  - `credit()` uses **optimistic locking** (`@Version` on `Account`) --
-    credits come from many independent, low-contention sources (bill
-    payments across the user base), so occasional retries are cheap.
-  - `debit()` uses **pessimistic row locking** (`SELECT ... FOR UPDATE`) --
-    redemptions on the *same* account are the actual contention point (e.g.
-    a user double-tapping "redeem"), so we serialize at the DB level and
-    make double-spend structurally impossible rather than statistically
-    unlikely.
-- **Audit endpoint**: `/audit` recomputes the balance by replaying every
-  POSTED entry and compares it to the cached balance on `Account`. This is
-  the concrete answer to "how do you guarantee correctness" -- the cache is
-  just a performance optimization; the log is the source of truth.
-
-- **JWT authentication, tied to resource ownership**: `POST /auth/register`
-  provisions a `User` and `Account` together and returns a signed JWT with
-  `accountId` embedded as a claim. Every ledger endpoint checks that the
-  `accountId` in the URL matches the `accountId` in the caller's token (or
-  that the caller has the `ADMIN` role) -- a valid token proves who you are,
-  this check proves you're allowed to touch *this* account. See
-  `SecurityConfig`'s Javadoc for exactly what changes if you swap this for
-  OAuth2 against a real IdP (Auth0/Okta/Cognito) instead.
-- **Distributed rate limiting via Redis**: `RedisTokenBucketRateLimiter` runs
-  the entire read-refill-check-decrement sequence as one atomic Lua script
-  inside Redis (`src/main/resources/scripts/token_bucket.lua`), so the limit
-  holds correctly no matter how many instances of this service are running
-  behind a load balancer. The original in-memory version is kept as a
-  `no-redis` profile fallback for local dev without Redis running, wired
-  through a shared `RateLimiter` interface so the controller doesn't know or
-  care which one is active.
-- **Reversals, not deletes**: `POST /entries/{id}/reverse` never touches the
-  original row. It posts a compensating entry (opposite type, same amount),
-  flips the original's status to `REVERSED`, and reuses the same
-  credit/debit locking + idempotency machinery. This is the pattern real
-  ledgers (and CRED's rewards system) use for chargebacks/corrections --
-  the log only ever grows.
-
-## Running locally
-
-**Option A — everything in Docker:**
-```bash
-docker compose up --build     # builds the app image, starts Postgres + Redis + app
+```
+React 19 + TypeScript + Tailwind  ──►  Spring Boot 3 (Java 21)  ──►  PostgreSQL 16 (source of truth)
+          (nginx in Docker)                  │
+                                             └────────────────────►  Redis 7 (token-bucket rate limiting)
 ```
 
-**Option B — Postgres + Redis in Docker, app on host (faster iteration):**
-```bash
-docker compose up -d postgres redis
-mvn spring-boot:run
-```
-
-**Option C — no Redis at all (in-memory rate limiter):**
-```bash
-docker compose up -d postgres
-mvn spring-boot:run -Dspring-boot.run.profiles=no-redis
-```
-
-## Authentication
+## Run it
 
 ```bash
-# Register (creates User + Account, returns a JWT)
-curl -X POST localhost:8080/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"username":"aryan123","password":"correcthorsebattery"}'
-
-# Use the token on any ledger endpoint
-curl localhost:8080/api/v1/accounts/<accountId>/balance \
-  -H "Authorization: Bearer <token>"
+docker compose up --build
 ```
 
-## Running tests
+| | |
+|---|---|
+| UI | http://localhost:3000 |
+| API + Swagger UI | http://localhost:8080/swagger-ui.html |
+| Admin login | `admin` / `admin-password-123` (override in `.env`, see `.env.example`) |
+
+Register a user, add points, redeem, reverse an entry, and watch the **"ledger verified"** badge
+— it comes from `/audit`, which replays the whole log and compares it with the cached balance.
+Log in as `admin` to browse every account and act on them.
+
+Without Docker: see [ledger-service/README.md](ledger-service/README.md) and
+[ledger-frontend/README.md](ledger-frontend/README.md).
+
+## What it demonstrates
+
+**Correctness**
+- **Append-only log.** Rows are never edited or deleted; mistakes are fixed by a *compensating entry*
+  linked to the original (`reversal_of`). This is enforced **in the database** with a trigger — only
+  `status` may change (`POSTED → REVERSED`, never back) — so a bug or manual SQL can't rewrite history.
+- **Audit replay.** `balance = Σ credits − Σ debits` over the log, compared to the cached balance on
+  every page load. The cache is a performance optimisation, never the truth.
+- **No double spend.** Debits take a pessimistic row lock (`SELECT … FOR UPDATE`); credits use optimistic
+  locking (`@Version`) with bounded retry. Defence in depth: a DB `CHECK (cached_balance >= 0)`.
+- **Idempotency.** Every write carries a client key, unique *per account*. Same key + same request →
+  `200` with the original entry; same key + different request → `409`; a race between two identical
+  requests is resolved by the unique constraint, not by luck. The UI generates one key per *user action*
+  and reuses it on retry.
+- **Reversal rules.** An entry can be reversed once (partial unique index), a reversal can't be reversed,
+  and reversing a credit re-checks the balance because the points may already be spent.
+
+**Security**
+- JWT access tokens (15 min) + **rotating refresh tokens** (opaque, stored only as SHA-256 hashes;
+  replaying a used token revokes the user's whole session family).
+- Ownership checks on every account route; **credit and reverse are admin-only** (they create/undo points).
+  `APP_DEMO_MODE=true` relaxes this to "own account only" so the UI works without an admin.
+- bcrypt, constant-time-ish login (dummy hash for unknown users), password length bounded to bcrypt's 72 bytes,
+  per-IP rate limiting on `/auth/**`, per-account rate limiting on redemptions (Redis Lua token bucket,
+  fail-open if Redis is down — the financial invariants live in Postgres, not in the limiter).
+- Non-root containers, security headers, CORS allow-list from config, secrets from env (the app refuses
+  a JWT secret under 32 bytes).
+
+**Engineering practice**
+- One error contract for *everything* (`code`, `message`, `requestId`, `fieldErrors`) — controllers, security
+  filters and framework errors alike. See [API_SPEC.md](ledger-service/API_SPEC.md).
+- Request-id correlation across response headers and every log line; access log; Prometheus metrics
+  (`ledger_entries_posted_total{type}`) and health probes; graceful shutdown.
+- Flyway-owned schema, `ddl-auto: validate`. OpenAPI/Swagger generated from code.
+- Server-side pagination with a **running balance computed in SQL** (window function), so the UI scales past
+  the first page without recomputing anything client-side.
+- Tests at each level (below) and a CI pipeline that also boots the full Docker stack.
+
+## Architecture notes
+
+```mermaid
+erDiagram
+    app_users ||--|| accounts : owns
+    accounts ||--o{ ledger_entries : "has (append-only)"
+    ledger_entries ||--o| ledger_entries : "reversal_of"
+    app_users ||--o{ refresh_tokens : holds
+    accounts { uuid id PK; numeric cached_balance "cache only"; bigint version }
+    ledger_entries { uuid id PK; uuid account_id FK; numeric amount; string type "CREDIT|DEBIT"; string status "POSTED|REVERSED"; string idempotency_key "unique per account"; uuid reversal_of "unique, nullable" }
+```
+
+Request flow for a redemption: `JWT filter → ownership check → rate limiter → LedgerService.debit`
+(`SELECT … FOR UPDATE` on the account → idempotency check → balance check → insert entry → update cache,
+one transaction). Metrics are recorded only after commit.
+
+Key trade-offs, deliberately made:
+- **Cached balance + log** instead of computing balance on every read: O(1) reads, with the audit endpoint as the
+  safety net. The cost is two writes per entry, kept consistent by the transaction and the row lock.
+- **Mixed locking.** Debits are the contended path (double taps, retries) so they serialise on a row lock;
+  credits are rarer and independent, so optimistic locking avoids holding locks for no reason.
+- **Status flip on the original** (instead of a fully immutable row + a separate "reversed" table). It is the only
+  mutable column, it's guarded by the trigger, and it makes "what can still be reversed?" a trivial query.
+
+## Tests
+
+| Layer | What | Needs Docker |
+|---|---|---|
+| Backend unit | JWT (expiry, forgery, tampered payload, short secret), token-bucket limiter incl. 100-thread contention | no |
+| Backend integration (Testcontainers + Postgres 16) | Reversals both directions & audit consistency, reverse-once rules, idempotency semantics, concurrent debits (exactly one wins), concurrent credits (no lost update), HTTP auth/ownership/admin rules, validation, pagination, refresh-token rotation + theft detection, demo mode | yes (auto-skipped without) |
+| Frontend (Vitest + Testing Library) | API client (auth header, error mapping, refresh-on-401, single-flight refresh, session expiry), modals (validation, **same idempotency key on retry**), ledger table (running balance, reversal eligibility, paging) | no |
 
 ```bash
-mvn test
+cd ledger-service && mvn verify          # backend
+cd ledger-frontend && npm ci && npm run lint && npm test && npm run build
 ```
 
-- `LedgerConcurrencyTest` spins up a real Postgres via Testcontainers and
-  fires 10 concurrent debit requests against an account that can only
-  afford one -- asserts exactly one succeeds and the final balance is never
-  negative or inconsistent with the replayed ledger.
-- `RedisRateLimiterTest` spins up a real Redis via Testcontainers and fires
-  50 concurrent requests at a bucket with capacity 5 -- asserts exactly 5
-  are allowed, proving the Lua script is atomic under real concurrency
-  rather than just "usually correct."
+## Known limitations / what I'd do next
 
-## API
-
-See `API_SPEC.md` for the full endpoint reference.
-
-## Roadmap (not yet built)
-
-- OAuth2 resource-server mode (validate tokens from a real IdP instead of
-  self-issuing them) -- see the Javadoc on `SecurityConfig` for the swap
-- k6/JMeter load test results documented here with before/after latency
-- Refresh tokens (current JWTs expire in 1 hour with no renewal path)
+- **Single currency, single account per user**, and no multi-account transfers (those would need two-sided
+  double-entry postings).
+- Access tokens are stateless, so a role change or revocation takes effect when the 15-minute token expires.
+- Refresh tokens live in `localStorage` (simple, but exposed to XSS); the production-grade option is an
+  `HttpOnly` `SameSite` cookie. Using one refresh token from two tabs at once trips theft detection and logs
+  both out — a known trade-off of strict rotation.
+- No expired-refresh-token cleanup job, no email verification / password reset, no account lockout beyond rate limiting.
+- The in-memory rate limiter (profile `no-redis`) never evicts idle buckets; it exists for local dev and tests.
+- Not load-tested: I'd add a k6 scenario hammering one account to put numbers behind the "no double spend" claim.
+- Swagger UI is on by default for convenience; set `APP_SWAGGER_ENABLED=false` in production.

@@ -14,7 +14,8 @@ spring:
     open-in-view: false
     properties:
       hibernate:
-        format_sql: true
+        jdbc:
+          time_zone: UTC
 
   flyway:
     enabled: true
@@ -27,24 +28,64 @@ spring:
       # password:            # set if your Redis instance requires auth
       timeout: 2000ms
 
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
 app:
+  version: "@project.version@"
+
+  # When true, a normal user may credit/reverse on their OWN account. Meant for
+  # demos only -- in production credits come from trusted backends (ADMIN role).
+  demo-mode: ${APP_DEMO_MODE:false}
+
+  # Optional first-run admin. Created only if both values are set and the
+  # username does not exist yet.
+  admin:
+    username: ${APP_ADMIN_USERNAME:}
+    password: ${APP_ADMIN_PASSWORD:}
+
+  cors:
+    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
+
   jwt:
-    # Local-dev-only secret. Override with a real secret via environment
-    # variable APP_JWT_SECRET in any non-local environment -- never commit
-    # a production secret to source control.
+    # Local-dev-only secret. Override with APP_JWT_SECRET (>= 32 bytes) in any
+    # non-local environment -- never commit a production secret.
     secret: ${APP_JWT_SECRET:local-dev-only-secret-change-me-32bytes-min}
-    expiry-seconds: 3600
+    expiry-seconds: 900              # 15 min access token
+    refresh-expiry-seconds: 604800   # 7 day rotating refresh token
+
+  rate-limit:
+    debit:
+      capacity: 5        # burst of 5 redemption attempts per account...
+      refill-per-second: 0.5   # ...then 1 every 2 seconds
+    auth:
+      capacity: 20       # per client IP, across register/login/refresh
+      refill-per-second: 0.5
 
 server:
   port: 8080
+  shutdown: graceful
+  forward-headers-strategy: native   # trust X-Forwarded-* from private-range proxies
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when-authorized
+
+springdoc:
+  swagger-ui:
+    enabled: ${APP_SWAGGER_ENABLED:true}
+  api-docs:
+    enabled: ${APP_SWAGGER_ENABLED:true}
 
 logging:
+  pattern:
+    level: "%5p [%X{requestId:-}]"
   level:
-    com.cred.ledger: DEBUG
-    org.hibernate.SQL: DEBUG
+    com.cred.ledger: INFO

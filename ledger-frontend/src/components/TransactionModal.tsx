@@ -1,10 +1,11 @@
 import { type FormEvent, useState } from "react";
+import { newIdempotencyKey } from "../lib/api";
 import type { EntryType } from "../lib/types";
 
 interface Props {
   type: EntryType;
   onClose: () => void;
-  onSubmit: (amount: number, referenceId: string) => Promise<void>;
+  onSubmit: (amount: number, referenceId: string, idempotencyKey: string) => Promise<void>;
 }
 
 const COPY: Record<EntryType, { title: string; verb: string; placeholder: string; accent: string }> = {
@@ -23,6 +24,9 @@ const COPY: Record<EntryType, { title: string; verb: string; placeholder: string
 };
 
 export function TransactionModal({ type, onClose, onSubmit }: Props) {
+  // One key per opened modal: retrying after an error re-sends the SAME key, so the
+  // server applies the operation at most once even if the first attempt did land.
+  const [idempotencyKey] = useState(() => newIdempotencyKey(type.toLowerCase()));
   const [amount, setAmount] = useState("");
   const [referenceId, setReferenceId] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -31,11 +35,12 @@ export function TransactionModal({ type, onClose, onSubmit }: Props) {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    const parsed = Number(amount);
-    if (!parsed || parsed <= 0) {
-      setLocalError("Enter an amount greater than 0");
+    const trimmed = amount.trim();
+    if (!/^\d+(\.\d{1,2})?$/.test(trimmed) || Number(trimmed) <= 0) {
+      setLocalError("Enter an amount greater than 0 with at most 2 decimals");
       return;
     }
+    const parsed = Number(trimmed);
     if (!referenceId.trim()) {
       setLocalError("Reference ID is required");
       return;
@@ -43,7 +48,7 @@ export function TransactionModal({ type, onClose, onSubmit }: Props) {
     setSubmitting(true);
     setLocalError(null);
     try {
-      await onSubmit(parsed, referenceId.trim());
+      await onSubmit(parsed, referenceId.trim(), idempotencyKey);
       onClose();
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : "Something went wrong");
@@ -56,8 +61,12 @@ export function TransactionModal({ type, onClose, onSubmit }: Props) {
     <div
       className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center px-4 z-50"
       onClick={onClose}
+      role="presentation"
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={copy.title}
         className="w-full max-w-sm bg-ink-panel border border-ink-border rounded-xl p-6 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >

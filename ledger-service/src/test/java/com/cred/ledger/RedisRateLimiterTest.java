@@ -35,7 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *    `capacity` through -- this is what the Lua script buys over a
  *    naive GET-then-SET from Java, which would race.
  */
-@Testcontainers
+@Testcontainers(disabledWithoutDocker = true)
 class RedisRateLimiterTest {
 
     @Container

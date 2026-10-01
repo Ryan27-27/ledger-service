@@ -1,64 +1,37 @@
-# Ledger Frontend
+# ledger-frontend
 
-A React + TypeScript + Tailwind client for the `ledger-service` Spring Boot API.
-
-## What it does
-
-- Open a points account
-- Add points (credit) and redeem points (debit), each through a form that
-  requires a reference ID — the UI generates a fresh idempotency key per
-  action automatically (`src/lib/api.ts` → `newIdempotencyKey`)
-- View the full transaction ledger with a running balance per row — newest
-  entry on top, oldest at the bottom, exactly like a bank passbook
-- Reverse any posted entry (with a reason) and watch the compensating entry
-  appear as a new row rather than the original disappearing
-- A live "ledger verified" badge calls `/audit` and shows green when the
-  cached balance matches the replayed total from the append-only log, red
-  if they ever disagree
-
-## Setup
+React 19 + TypeScript + Vite + Tailwind UI for the ledger service. See the [root README](../README.md)
+for the overview; this file is the frontend quick start.
 
 ```bash
 npm install
-cp .env.example .env      # point VITE_API_BASE_URL at your backend if not localhost:8080
-npm run dev                # http://localhost:5173
-```
-
-Requires `ledger-service` running on `localhost:8080` (see the backend
-README — `docker compose up --build` there is the fastest path). CORS is
-already configured on the backend to allow `localhost:5173`.
-
-## Build
-
-```bash
-npm run build      # outputs to dist/
-npm run preview    # serve the production build locally
+cp .env.example .env     # VITE_API_BASE_URL, defaults to http://localhost:8080/api/v1
+npm run dev              # http://localhost:5173  (backend must allow this origin; the default does)
+npm run lint && npm test && npm run build
 ```
 
 ## Structure
 
 ```
 src/
-  lib/
-    types.ts     — TypeScript types mirroring the backend DTOs
-    api.ts       — fetch wrapper + idempotency key generation
-  hooks/
-    useLedger.ts — all account/balance/entries/audit state + mutations
-  components/
-    AccountOnboarding.tsx  — create-account screen
-    BalanceHero.tsx        — balance display + audit seal
-    ActionBar.tsx           — credit/debit trigger buttons
-    TransactionModal.tsx    — shared credit/debit form
-    LedgerTable.tsx         — passbook-style entry list with running balance
-    ErrorBanner.tsx
-  App.tsx
+  lib/api.ts          typed fetch client: bearer auth, refresh-on-401 (single-flight), error mapping
+  lib/types.ts        mirrors the API's DTOs
+  hooks/useLedger.ts  session, paging, admin "view account", mutations
+  components/         AuthScreen, BalanceHero, ActionBar, LedgerTable, TransactionModal,
+                      ReverseModal, AdminPanel, ErrorBanner
+  test/setup.ts       Testing Library / jest-dom wiring
 ```
 
-## Design notes
+## Behaviours worth knowing
 
-Dark ink-navy palette (not pure black) with two functional accent colors —
-teal for credits, coral for debits — mirroring how ledger data is read at a
-glance: green in, red out. Amounts and IDs use a monospace face
-(JetBrains Mono) throughout, since tabular alignment matters when you're
-scanning a column of numbers for correctness — the same reason real bank
-statements and terminal ledgers use fixed-width type.
+- **Idempotency keys are per user action.** A modal creates its key once and re-sends it if the user retries
+  after a failure, so a timed-out request that *did* land is never applied twice.
+- **Running balance comes from the server**, so it stays correct on any page of history.
+- **Roles/permissions:** "Add points" and "reverse" appear only for admins (or for everyone when the
+  backend reports `demoMode`). The server enforces the same rules; the UI just doesn't offer what would be refused.
+- Expired access tokens are refreshed transparently; if the refresh fails the user is returned to sign-in.
+
+## Docker
+
+`Dockerfile` builds the app and serves it with unprivileged nginx, which also reverse-proxies `/api/` to the
+backend (so the browser sees one origin and no CORS is needed). Use the root `docker-compose.yml`.

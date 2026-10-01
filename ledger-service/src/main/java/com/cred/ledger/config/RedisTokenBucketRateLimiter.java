@@ -1,5 +1,7 @@
 package com.cred.ledger.config;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -21,6 +23,8 @@ import java.util.List;
  * instances at the same moment, without needing a distributed lock.
  */
 public class RedisTokenBucketRateLimiter implements RateLimiter {
+
+    private static final Logger log = LoggerFactory.getLogger(RedisTokenBucketRateLimiter.class);
 
     private final StringRedisTemplate redisTemplate;
     private final RedisScript<Long> script;
@@ -54,15 +58,22 @@ public class RedisTokenBucketRateLimiter implements RateLimiter {
         String bucketKey = keyPrefix + ":" + key;
         double nowSeconds = System.currentTimeMillis() / 1000.0;
 
-        Long result = redisTemplate.execute(
-                script,
-                List.of(bucketKey),
-                String.valueOf(capacity),
-                String.valueOf(refillTokensPerSecond),
-                String.valueOf(nowSeconds),
-                "1"
-        );
-
-        return result != null && result == 1L;
+        try {
+            Long result = redisTemplate.execute(
+                    script,
+                    List.of(bucketKey),
+                    String.valueOf(capacity),
+                    String.valueOf(refillTokensPerSecond),
+                    String.valueOf(nowSeconds),
+                    "1"
+            );
+            return result != null && result == 1L;
+        } catch (RuntimeException e) {
+            // Fail OPEN: a Redis outage must not take the ledger down with it. The
+            // financial invariants (locking, idempotency, balance checks) live in
+            // Postgres and do not depend on the limiter.
+            log.warn("Rate limiter unavailable ({}); allowing request for key {}", e.getMessage(), bucketKey);
+            return true;
+        }
     }
 }

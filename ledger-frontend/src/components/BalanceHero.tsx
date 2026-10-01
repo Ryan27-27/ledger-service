@@ -1,21 +1,23 @@
-import type { AuditResponse } from "../lib/types";
+import type { AuditResponse, Role } from "../lib/types";
 
 interface Props {
-  userId: string;
+  username: string;
+  role: Role;
   balance: number | null;
   audit: AuditResponse | null;
   onSignOut: () => void;
 }
 
-export function BalanceHero({ userId, balance, audit, onSignOut }: Props) {
+export function BalanceHero({ username, role, balance, audit, onSignOut }: Props) {
   return (
     <div className="flex items-start justify-between">
       <div>
         <div className="flex items-center gap-2 mb-2">
           <span className="h-1.5 w-1.5 rounded-full bg-credit" />
-          <span className="font-mono text-xs text-text-muted tracking-widest uppercase">
-            {userId}
-          </span>
+          <span className="font-mono text-xs text-text-muted tracking-widest uppercase">{username}</span>
+          {role === "ADMIN" && (
+            <span className="text-[10px] font-mono text-amber px-1.5 py-0.5 rounded bg-amber-bg uppercase">admin</span>
+          )}
         </div>
         <div className="font-display font-600 text-5xl sm:text-6xl tracking-tight tabular">
           {balance === null ? (
@@ -35,7 +37,7 @@ export function BalanceHero({ userId, balance, audit, onSignOut }: Props) {
           onClick={onSignOut}
           className="text-xs font-mono text-text-faint hover:text-text-muted transition-colors"
         >
-          switch account
+          sign out
         </button>
       </div>
     </div>

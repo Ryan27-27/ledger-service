@@ -1,5 +1,6 @@
 package com.cred.ledger.security;
 
+import com.cred.ledger.config.ErrorBody;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -10,15 +11,11 @@ import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
-import java.time.Instant;
-import java.util.LinkedHashMap;
-import java.util.Map;
 
 /**
- * Without this, Spring Security's default entry point returns an empty
- * 401/403 or (with form login enabled) a redirect -- neither is useful to
- * an API client. This keeps every error response, auth or otherwise, in
- * the same JSON shape as GlobalExceptionHandler.
+ * Without this, Spring Security's default entry point returns an empty 401 (or
+ * a redirect). This keeps auth failures in the same JSON shape as every other
+ * error the API returns.
  */
 @Component
 public class JsonAuthenticationEntryPoint implements AuthenticationEntryPoint {
@@ -30,13 +27,7 @@ public class JsonAuthenticationEntryPoint implements AuthenticationEntryPoint {
                           AuthenticationException authException) throws IOException, ServletException {
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("timestamp", Instant.now().toString());
-        body.put("status", 401);
-        body.put("error", "Unauthorized");
-        body.put("message", "A valid Bearer token is required");
-
-        objectMapper.writeValue(response.getOutputStream(), body);
+        objectMapper.writeValue(response.getOutputStream(),
+                ErrorBody.of(401, "Unauthorized", "UNAUTHENTICATED", "A valid Bearer token is required"));
     }
 }

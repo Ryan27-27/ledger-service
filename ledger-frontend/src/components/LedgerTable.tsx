@@ -1,89 +1,90 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import type { LedgerEntryResponse } from "../lib/types";
+import { ReverseModal } from "./ReverseModal";
 
 interface Props {
-  entries: LedgerEntryResponse[]; // ascending, oldest first
-  onReverse: (entryId: string, reason: string) => Promise<void>;
+  entries: LedgerEntryResponse[]; // newest first; runningBalance computed by the server
+  canReverse: boolean;
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void;
+  onReverse: (entryId: string, reason: string, idempotencyKey: string) => Promise<void>;
 }
 
-interface RowData extends LedgerEntryResponse {
-  runningBalance: number;
-}
+export function LedgerTable({ entries, canReverse, hasMore, loadingMore, onLoadMore, onReverse }: Props) {
+  const [reversing, setReversing] = useState<LedgerEntryResponse | null>(null);
 
-export function LedgerTable({ entries, onReverse }: Props) {
-  const [reversingId, setReversingId] = useState<string | null>(null);
-
-  const rows: RowData[] = useMemo(() => {
-    let running = 0;
-    const withBalance = entries.map((e) => {
-      if (e.status === "POSTED") {
-        running += e.type === "CREDIT" ? e.amount : -e.amount;
-      }
-      return { ...e, runningBalance: running };
-    });
-    return withBalance.reverse(); // newest first for display
-  }, [entries]);
-
-  if (rows.length === 0) {
+  if (entries.length === 0) {
     return (
       <div className="border border-dashed border-ink-border rounded-xl py-14 text-center">
         <p className="text-sm text-text-muted">No entries yet.</p>
-        <p className="text-xs text-text-faint mt-1 font-mono">
-          the ledger fills in as points move
-        </p>
+        <p className="text-xs text-text-faint mt-1 font-mono">the ledger fills in as points move</p>
       </div>
     );
   }
 
   return (
-    <div className="border border-ink-border rounded-xl overflow-hidden">
-      <div className="grid grid-cols-[1fr,auto,auto,auto] gap-3 px-4 py-2.5 border-b border-ink-border bg-ink-raised">
-        <span className="text-[11px] font-mono text-text-faint uppercase tracking-wide">Entry</span>
-        <span className="text-[11px] font-mono text-text-faint uppercase tracking-wide text-right">Amount</span>
-        <span className="text-[11px] font-mono text-text-faint uppercase tracking-wide text-right hidden sm:block">
-          Balance
-        </span>
-        <span className="w-16" />
+    <>
+      <div className="border border-ink-border rounded-xl overflow-hidden">
+        <div className="grid grid-cols-[1fr_auto_auto_auto] gap-3 px-4 py-2.5 border-b border-ink-border bg-ink-raised">
+          <span className="text-[11px] font-mono text-text-faint uppercase tracking-wide">Entry</span>
+          <span className="text-[11px] font-mono text-text-faint uppercase tracking-wide text-right">Amount</span>
+          <span className="text-[11px] font-mono text-text-faint uppercase tracking-wide text-right hidden sm:block">
+            Balance
+          </span>
+          <span className="w-16" />
+        </div>
+
+        <div className="divide-y divide-ink-border">
+          {entries.map((entry) => (
+            <Row
+              key={entry.id}
+              entry={entry}
+              reversible={canReverse && entry.status === "POSTED" && entry.reversalOf === null}
+              onReverseClick={() => setReversing(entry)}
+            />
+          ))}
+        </div>
+
+        {hasMore && (
+          <button
+            onClick={onLoadMore}
+            disabled={loadingMore}
+            className="w-full py-3 text-xs font-mono text-text-muted hover:text-text-primary border-t border-ink-border
+                       hover:bg-ink-raised/40 transition-colors disabled:opacity-40"
+          >
+            {loadingMore ? "Loading…" : "Load older entries"}
+          </button>
+        )}
       </div>
 
-      <div className="divide-y divide-ink-border">
-        {rows.map((entry) => (
-          <Row
-            key={entry.id}
-            entry={entry}
-            reversing={reversingId === entry.id}
-            onReverseClick={async () => {
-              const reason = window.prompt("Reason for reversal?");
-              if (reason === null) return;
-              setReversingId(entry.id);
-              try {
-                await onReverse(entry.id, reason || "manual correction");
-              } finally {
-                setReversingId(null);
-              }
-            }}
-          />
-        ))}
-      </div>
-    </div>
+      {reversing && (
+        <ReverseModal
+          entry={reversing}
+          onClose={() => setReversing(null)}
+          onSubmit={(reason, key) => onReverse(reversing.id, reason, key)}
+        />
+      )}
+    </>
   );
 }
 
 function Row({
   entry,
-  reversing,
+  reversible,
   onReverseClick,
 }: {
-  entry: RowData;
-  reversing: boolean;
+  entry: LedgerEntryResponse;
+  reversible: boolean;
   onReverseClick: () => void;
 }) {
   const isReversed = entry.status === "REVERSED";
   const isCredit = entry.type === "CREDIT";
+  const isCompensation = entry.reversalOf !== null;
 
   return (
     <div
-      className={`grid grid-cols-[1fr,auto,auto,auto] gap-3 px-4 py-3 items-center transition-colors
+      className={`grid grid-cols-[1fr_auto_auto_auto] gap-3 px-4 py-3 items-center transition-colors
         ${isReversed ? "opacity-45" : "hover:bg-ink-raised/40"}`}
     >
       <div className="min-w-0">
@@ -96,14 +97,18 @@ function Row({
             {entry.type}
           </span>
           {isReversed && (
-            <span className="text-[10px] font-mono text-amber px-1.5 py-0.5 rounded bg-amber-bg">
-              ↺ reversed
+            <span className="text-[10px] font-mono text-amber px-1.5 py-0.5 rounded bg-amber-bg">↺ reversed</span>
+          )}
+          {isCompensation && (
+            <span className="text-[10px] font-mono text-text-muted px-1.5 py-0.5 rounded bg-ink-raised">
+              reversal
             </span>
           )}
         </div>
         <p className="text-sm text-text-primary mt-1 truncate" title={entry.referenceId}>
           {entry.referenceId}
         </p>
+        {entry.remarks && <p className="text-xs text-text-muted mt-0.5 truncate">{entry.remarks}</p>}
         <p className="text-[11px] font-mono text-text-faint mt-0.5">
           {new Date(entry.createdAt).toLocaleString(undefined, {
             month: "short",
@@ -123,18 +128,21 @@ function Row({
         {entry.amount.toFixed(2)}
       </span>
 
-      <span className="text-sm font-mono tabular text-right text-text-muted hidden sm:block whitespace-nowrap">
-        {entry.runningBalance.toFixed(2)}
+      <span
+        className="text-sm font-mono tabular text-right text-text-muted hidden sm:block whitespace-nowrap"
+        data-testid="running-balance"
+      >
+        {entry.runningBalance === null ? "—" : entry.runningBalance.toFixed(2)}
       </span>
 
-      <div className="text-right">
-        {!isReversed && (
+      <div className="text-right w-16">
+        {reversible && (
           <button
             onClick={onReverseClick}
-            disabled={reversing}
-            className="text-[11px] font-mono text-text-faint hover:text-amber transition-colors disabled:opacity-40"
+            aria-label={`Reverse ${entry.referenceId}`}
+            className="text-[11px] font-mono text-text-faint hover:text-amber transition-colors"
           >
-            {reversing ? "…" : "reverse"}
+            reverse
           </button>
         )}
       </div>

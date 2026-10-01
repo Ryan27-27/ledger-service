@@ -10,19 +10,18 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Append-only ledger row. NEVER updated or deleted after creation
- * (status flips POSTED -> REVERSED via a separate compensating row,
- * see LedgerService#reverse()).
+ * Append-only ledger row. Financial facts (account, amount, type, reference,
+ * idempotency key, remarks, reversal link, timestamp) are NEVER changed after
+ * insert; a mistake is corrected by inserting a compensating entry. The one
+ * mutable column is {@code status} (POSTED -> REVERSED), which marks an entry
+ * as already corrected. A database trigger (see V3 migration) enforces all of
+ * this, so even a buggy code path or manual SQL cannot rewrite history.
  *
- * idempotencyKey has a unique DB constraint so a retried request
- * (client timeout + retry, network blip, etc.) can never be double
- * counted -- the second insert attempt fails fast at the DB level.
+ * (account_id, idempotency_key) is unique, so a retried request can never be
+ * double counted -- the second insert fails fast at the DB level.
  */
 @Entity
-@Table(
-    name = "ledger_entries",
-    uniqueConstraints = @UniqueConstraint(name = "uk_idempotency_key", columnNames = "idempotencyKey")
-)
+@Table(name = "ledger_entries")
 @Getter
 @Setter
 @NoArgsConstructor
@@ -50,22 +49,28 @@ public class LedgerEntry {
     @Column(nullable = false)
     private String referenceId;
 
-    /** Client-supplied key that makes the write safe to retry */
+    /** Client-supplied key that makes the write safe to retry (unique per account) */
     @Column(nullable = false)
     private String idempotencyKey;
 
-    /** Free-text note, e.g. "reversal of entry <id>" */
+    /** Free-text note, e.g. the reason given for a reversal */
     private String remarks;
+
+    /** If this is a compensating entry, the id of the entry it reverses. */
+    private UUID reversalOf;
 
     @Column(nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
 
     public LedgerEntry(UUID accountId, BigDecimal amount, EntryType type,
-                        String referenceId, String idempotencyKey) {
+                       String referenceId, String idempotencyKey,
+                       String remarks, UUID reversalOf) {
         this.accountId = accountId;
         this.amount = amount;
         this.type = type;
         this.referenceId = referenceId;
         this.idempotencyKey = idempotencyKey;
+        this.remarks = remarks;
+        this.reversalOf = reversalOf;
     }
 }

@@ -3,10 +3,13 @@ package com.cred.ledger.security;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
+import java.nio.charset.StandardCharsets;
 import java.util.Date;
 import java.util.UUID;
 
@@ -26,13 +29,23 @@ import java.util.UUID;
 @Component
 public class JwtService {
 
+    private static final Logger log = LoggerFactory.getLogger(JwtService.class);
+    private static final String DEV_DEFAULT_SECRET = "local-dev-only-secret-change-me-32bytes-min";
+
     private final SecretKey key;
     private final long expirySeconds;
 
     public JwtService(
             @Value("${app.jwt.secret}") String secret,
-            @Value("${app.jwt.expiry-seconds:3600}") long expirySeconds) {
-        this.key = Keys.hmacShaKeyFor(secret.getBytes());
+            @Value("${app.jwt.expiry-seconds:900}") long expirySeconds) {
+        byte[] secretBytes = secret.getBytes(StandardCharsets.UTF_8);
+        if (secretBytes.length < 32) {
+            throw new IllegalStateException("app.jwt.secret must be at least 32 bytes (256 bits) for HS256");
+        }
+        if (DEV_DEFAULT_SECRET.equals(secret)) {
+            log.warn("Using the built-in development JWT secret. Set APP_JWT_SECRET before deploying anywhere real.");
+        }
+        this.key = Keys.hmacShaKeyFor(secretBytes);
         this.expirySeconds = expirySeconds;
     }
 

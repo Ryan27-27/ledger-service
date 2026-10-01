@@ -11,12 +11,13 @@ import java.util.UUID;
 
 /**
  * Account holds a DENORMALIZED cached balance for fast reads.
- * The source of truth is always the LedgerEntry table -- this cache
- * is validated/rebuilt by LedgerService#reconcile().
+ * The source of truth is always the LedgerEntry table -- this cache is
+ * verified against a full replay of the log by LedgerService#audit().
  *
- * @Version enables optimistic locking so two concurrent redemptions
- * against the same account can't both read-modify-write the balance
- * without one of them failing with OptimisticLockException.
+ * @Version enables optimistic locking: two concurrent credits that both
+ * read-modify-write the balance can't both win -- one fails with an
+ * optimistic-lock exception and is retried. Debits additionally take a
+ * pessimistic row lock (see AccountRepository#findByIdForUpdate).
  */
 @Entity
 @Table(name = "accounts")
